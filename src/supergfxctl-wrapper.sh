@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Override --supported to show all possible modes (not just currently available)
+# The plasmoid needs to see all modes to allow switching
+if [[ "$1" == "--supported" || "$1" == "-s" ]]; then
+    echo "[Hybrid, AsusMuxDgpu]"
+    exit 0
+fi
+
 # Run the original supergfxctl command with all arguments
 /usr/bin/supergfxctl-original "$@"
 SUPERGFX_EXIT_CODE=$?
