@@ -1,0 +1,24 @@
+**Paste:**
+```
+# Backups
+*.backup
+*~
+
+# Logs
+*.log
+
+# Archives
+*.tar.gz
+*.zip
+
+# IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+tmp/

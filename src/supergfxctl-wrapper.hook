@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/bin/supergfxctl
+
+[Action]
+Description = Restoring supergfxctl brightness wrapper...
+When = PostTransaction
+Exec = /bin/bash -c 'if [ -f /usr/bin/supergfxctl ] && [ -f /usr/bin/supergfxctl-original ]; then rm -f /usr/bin/supergfxctl; fi; if [ -f /usr/bin/supergfxctl ] && [ ! -f /usr/bin/supergfxctl-original ]; then mv /usr/bin/supergfxctl /usr/bin/supergfxctl-original; fi; if [ -f /usr/local/bin/supergfxctl-wrapper.sh ]; then cp /usr/local/bin/supergfxctl-wrapper.sh /usr/bin/supergfxctl && chmod +x /usr/bin/supergfxctl; fi'
+NeedsTargets
