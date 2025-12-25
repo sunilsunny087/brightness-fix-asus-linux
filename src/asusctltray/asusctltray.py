@@ -1,0 +1,772 @@
+#!/usr/bin/env python3
+
+# Copyright (c) Leonardo Baldin
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import os
+import webbrowser
+from abc import ABC, abstractmethod
+from collections.abc import MutableMapping, Set
+
+import dbus
+from dbus.mainloop.glib import DBusGMainLoop
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("AppIndicator3", "0.1")
+
+from gi.repository import AppIndicator3 as appindicator  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+
+class Bijection(Set):
+    """A bijection between two (mathematical) sets, labeled "left" and "right".
+
+    Implements the `Set` interface as a collection of
+    `(left, right)` pairs.
+
+    Parameters
+    ----------
+    items : A collection of `(left, right)` pairs (could be another
+        `Bijection`) or a `dict` with unique values that will be
+        used as the `left --> right` mapping.
+
+    Attributes
+    ----------
+    left : `BijectionMap` from left set to right.
+
+    right : `BijectionMap` from right set to left.
+    """
+
+    class Map(MutableMapping):
+        """Mapping from one set of a `Bijection` to another.
+
+        Shouldn't be used on its own.
+        """
+
+        def __init__(self, other=None):
+            self.other = other
+            self._dict = dict()
+
+        def __len__(self):
+            return len(self._dict)
+
+        def __contains__(self, value):
+            return value in self._dict
+
+        def __iter__(self):
+            return iter(self._dict)
+
+        def __getitem__(self, key):
+            return self._dict[key]
+
+        def __setitem__(self, key, value):
+            # Check that we are not creating a duplicate in the other side
+            try:
+                back = self.other[value]
+            except KeyError:
+                pass
+            else:
+                if back != key:
+                    raise KeyError("Value already exists for another key.")
+
+            self._dict[key] = value
+            self.other._dict[value] = key
+
+        def __delitem__(self, key):
+            value = self._dict[key]
+            del self._dict[key]
+            del self.other._dict[value]
+
+        def __repr__(self):
+            return "{}({})".format(type(self).__name__, repr(self._dict))
+
+        def keys(self):
+            return self._dict.keys()
+
+        def values(self):
+            return self._dict.values()
+
+    def __init__(self, items=None):
+        self.left = self.Map()
+        self.right = self.Map(self.left)
+        self.left.other = self.right
+
+        if items is not None:
+            if isinstance(items, dict):
+                items = items.items()
+
+            for litem, ritem in items:
+                self.left[litem] = ritem
+
+    def __len__(self):
+        return len(self.left)
+
+    def __iter__(self):
+        return iter(self.left.items())
+
+    def __getitem__(self, key):
+        if key in self.left:
+            return self.left[key]
+        return self.right[key]
+
+    def __contains__(self, value):
+        if not isinstance(value, tuple) or len(value) != 2:
+            return False
+
+        lvalue, rvalue = value
+        try:
+            return self.left[lvalue] == rvalue
+        except KeyError:
+            return False
+
+    def __eq__(self, other):
+        return isinstance(other, Bijection) and self.left._dict == other.left._dict
+
+    def __repr__(self):
+        return "{}({})".format(type(self).__name__, repr(list(self)))
+
+
+ICON_BASE_PATH: str = "/usr/share/pixmaps"
+
+FAN_PROFILES = Bijection(
+    {
+        0: "Balanced",
+        1: "Performance",
+        2: "Quiet",
+    }
+)
+
+# From https://gitlab.com/asus-linux/supergfxctl-gex/-/blob/main/src/modules/labels.ts
+GFX_MODES = Bijection(
+    {
+        0: "hybrid",
+        1: "integrated",
+        2: "vfio",
+        3: "egpu",
+        4: "asusmuxdiscreet",
+        5: "none",
+    }
+)
+
+GFX_USER_ACTION: dict[int, str] = {
+    0: "logout",
+    1: "integrated",
+    2: "asusgpumuxdisable",
+    3: "none",
+}
+
+GFX_POWER: dict[int, str] = {
+    0: "active",
+    1: "suspended",
+    2: "off",
+    3: "off",
+    4: "active",
+    5: "active",
+}
+
+BOOST_CONTROL: list[dict[str, str]] = [
+    {
+        "path": "/sys/devices/system/cpu/intel_pstate/no_turbo",
+        "on": "echo 0 | pkexec tee {path}",
+        "off": "echo 1 | pkexec tee {path}",
+    },
+    {
+        "path": "/sys/devices/system/cpu/cpufreq/boost",
+        "on": "echo 1 | pkexec tee {path}",
+        "off": "echo 0 | pkexec tee {path}",
+    },
+]
+
+
+def on_widget_active_strict(callback) -> None:
+    """Decorator to inject a check for widget activation, calls the function only
+    when the widget is active"""
+
+    def inner(self, widget: Gtk.MenuItem):
+        # Return if the widget is not actually active
+        if not widget.get_active():
+            return
+        callback(self, widget)
+
+    return inner
+
+
+class Util:
+    """Contains utility functions for system interaction"""
+
+    @staticmethod
+    def build_dialog(msg: str) -> None:
+        """Utility to quickly build a MessageDialog with a standard format"""
+        dialog = Gtk.MessageDialog(
+            destroy_with_parent=True,
+            message_type=Gtk.MessageType.WARNING,
+            text="asusctltray",
+        )
+        dialog.set_title("asusctltray")
+        dialog.format_secondary_markup(msg)
+        return dialog
+
+    @staticmethod
+    def reboot() -> None:
+        """Requests system reboot to logind via dbus"""
+        login1_proxy = dbus.Interface(
+            dbus.SystemBus().get_object(
+                "org.freedesktop.login1", "/org/freedesktop/login1"
+            ),
+            dbus_interface="org.freedesktop.login1.Manager",
+        )
+
+        login1_proxy.Reboot(True)
+
+    @staticmethod
+    def logout() -> None:
+        """Requests user logout to logind via dbus"""
+        session_proxy = dbus.Interface(
+            dbus.SystemBus().get_object(
+                "org.freedesktop.login1", "/org/freedesktop/login1/session/auto"
+            ),
+            dbus_interface="org.freedesktop.login1.Session",
+        )
+
+        session_proxy.Terminate()
+
+
+class Controller(ABC):
+    """Abstract base class for submenu controllers"""
+
+    @property
+    def pre_menu(self) -> list[Gtk.MenuItem]:
+        """Items to be appended before the submenu
+
+        Returns
+        -------
+        - `list[Gtk.MenuItem]`
+            The list of instantiated MenuItem's to be appended
+        """
+        return []
+
+    @property
+    def post_menu(self) -> list[Gtk.MenuItem]:
+        """Items to be appended after the submenu
+
+        Returns
+        -------
+        - `list[Gtk.MenuItem]`
+            The list of instantiated MenuItem's to be appended
+        """
+        return []
+
+    @property
+    @abstractmethod
+    def items(self) -> list[str]:
+        """The main item labels for the submenu items. They will be
+        created as RadioMenuItem's
+
+        Returns
+        -------
+        - `list[str]`
+            A list of items labels to convert in RadioMenuItem's
+        """
+        return []
+
+    @property
+    @abstractmethod
+    def proxy(self) -> dbus.Interface:
+        """The DBus proxy to use for requests to system services
+
+        Returns
+        -------
+        - `dbus.Interface`
+            A DBus proxy object to use for requests
+        """
+        return None
+
+    @property
+    @abstractmethod
+    def title(self) -> str:
+        """Title to be displayed over the submenu. By default, a `None` title
+        will disable the title element in the output submenu
+
+        Returns
+        -------
+        - `str`
+            A title, if `None` disables the submenu title
+        """
+        return None
+
+    def attach(self, menu: Gtk.Menu) -> None:
+        """Generates all necessary objects and attaches the resulting submenu
+        to the given `Gtk.Menu`
+
+        Parameters
+        ----------
+        - menu : `Gtk.Menu`
+            A menu reference to append the generated items to
+        """
+        if self.title:
+            title = Gtk.MenuItem.new_with_label(self.title)
+            title.set_sensitive(False)
+            menu.append(title)
+
+        for pre in self.pre_menu:
+            menu.append(pre)
+
+        group = []
+        for item in self.items:
+            # TODO: humanize/map labels to humanized text
+            menu_item = Gtk.RadioMenuItem.new_with_label(
+                group=group,
+                label=item,
+            )
+            menu_item.set_active(item == self.active_item)
+
+            menu_item.connect("activate", self.on_activation)
+            group = menu_item.get_group()
+            menu.append(menu_item)
+
+        for post in self.post_menu:
+            menu.append(post)
+
+    @property
+    @abstractmethod
+    def active_item(self) -> str:
+        """Always returns the currently activate item's label
+
+        Returns
+        -------
+        - str
+            The label of the `Gtk.MenuItem` currently active in the system
+        """
+        return ""
+
+    @abstractmethod
+    def on_activation(self, widget: Gtk.MenuItem) -> None:
+        """Callback fired when a `Gtk.MenuItem` is activated/clicked on
+
+        Parameters
+        ----------
+        - widget : `Gtk.Menuitem`
+            The widget being activated
+        """
+        pass
+
+
+class BoostController(Controller):
+    """Controller for the "Boost" submenu
+
+    Parameters
+    ----------
+    path : The file path for the boost control virtual file
+
+    on : The command to run to enable boost. Will be `format()`ed with the
+        `path` attributes before running
+
+    off : The command to run to disable boost. Will be `format()`ed with the
+        `path` attributes before running
+    """
+
+    def __init__(self, path: str, on: str, off: str):
+        super().__init__()
+
+        self.path = path
+        self.on = on
+        self.off = off
+
+    @property
+    def title(self):
+        return ""
+
+    @property
+    def pre_menu(self):
+        group = []
+        enable = Gtk.RadioMenuItem.new_with_label(group, label="Enabled")
+        group = enable.get_group()
+
+        disable = Gtk.RadioMenuItem.new_with_label(group, label="Disabled")
+        group = disable.get_group()
+
+        boost_enabled = self._is_boost_enabled()
+        enable.set_active(boost_enabled)
+        disable.set_active(not boost_enabled)
+
+        enable.connect("activate", self._enable_boost)
+        disable.connect("activate", self._disable_boost)
+
+        submenu = Gtk.Menu()
+        submenu.append(enable)
+        submenu.append(disable)
+
+        item = Gtk.MenuItem()
+        item.set_label("Boost")
+        item.set_submenu(submenu)
+
+        return [item]
+
+    def _is_boost_enabled(self) -> bool:
+        """Returns True if CPU turbo boost is enabled"""
+        data = open(self.path, "r").read()[:-1]
+        return int(data) == 1
+
+    @on_widget_active_strict
+    def _enable_boost(self, widget: Gtk.MenuItem) -> None:
+        """Enables boost if not already enabled"""
+        if self._is_boost_enabled():
+            return
+
+        status = os.system(self.on.format(path=self.path))
+        if os.waitstatus_to_exitcode(status) != 0:
+            widget.set_active(False)
+
+    @on_widget_active_strict
+    def _disable_boost(self, widget: Gtk.MenuItem) -> None:
+        """Disables boost if not already disabled"""
+        if not self._is_boost_enabled():
+            return
+
+        status = os.system(self.off.format(path=self.path))
+        if os.waitstatus_to_exitcode(status) != 0:
+            widget.set_active(False)
+
+    @property
+    def active_item(self):
+        return ""
+
+    @property
+    def items(self):
+        return []
+
+    @property
+    def proxy(self):
+        return None
+
+    def on_activation(self, widget: Gtk.MenuItem) -> None:
+        pass
+
+
+class CPUProfileController(Controller):
+    """Controller for the "CPU profiles" submenu"""
+
+    @property
+    def items(self):
+        return list(FAN_PROFILES.left.values())
+
+    @property
+    def proxy(self):
+        return dbus.Interface(
+            dbus.SystemBus().get_object("xyz.ljones.Asusd", "/xyz/ljones"),
+            dbus_interface="xyz.ljones.FanCurves",
+        )
+
+    @property
+    def title(self):
+        return "CPU fan profile"
+
+    @property
+    def active_item(self):
+        profile_list = list(FAN_PROFILES.left.items())
+        for profile_index, profile_name in profile_list[::-1]:
+            data = self.proxy.FanCurveData(profile_index)
+            if bool(data[0][3]):
+                return profile_name
+        return ""
+
+    @on_widget_active_strict
+    def on_activation(self, widget: Gtk.MenuItem):
+        active_index = FAN_PROFILES[widget.get_label()]
+        self.proxy.SetProfileFanCurveEnabled(active_index, "CPU", True)
+
+
+class GPUProfileController(Controller):
+    """Controller for the "GPU profiles" submenu"""
+
+    @property
+    def items(self):
+        return list(FAN_PROFILES.left.values())
+
+    @property
+    def proxy(self):
+        return dbus.Interface(
+            dbus.SystemBus().get_object("xyz.ljones.Asusd", "/xyz/ljones"),
+            dbus_interface="xyz.ljones.FanCurves",
+        )
+
+    @property
+    def title(self):
+        return "GPU fan profile"
+
+    @property
+    def active_item(self):
+        profile_list = list(FAN_PROFILES.left.items())
+        for profile_index, profile_name in profile_list[::-1]:
+            data = self.proxy.FanCurveData(profile_index)
+            if bool(data[1][3]):
+                return profile_name
+        return ""
+
+    @on_widget_active_strict
+    def on_activation(self, widget: Gtk.MenuItem):
+        active_index = FAN_PROFILES[widget.get_label()]
+        self.proxy.SetProfileFanCurveEnabled(active_index, "GPU", True)
+
+
+class GfxController(Controller):
+    """Controller for the "Graphics" submenu"""
+
+    @property
+    def pre_menu(self):
+        power = GFX_POWER[self.proxy.Power()]
+        item = Gtk.MenuItem.new_with_label(f"dGPU: {power}")
+        return [item, Gtk.SeparatorMenuItem()]
+
+    @property
+    def items(self):
+        # TODO: humanize labels
+        #return [GFX_MODES[int(mode)] for mode in self.proxy.Supported()]
+        return ["Hybrid", "AsusMuxDiscreet"]
+
+    @property
+    def proxy(self):
+        return dbus.Interface(
+            dbus.SystemBus().get_object(
+                "org.supergfxctl.Daemon", "/org/supergfxctl/Gfx"
+            ),
+            dbus_interface="org.supergfxctl.Daemon",
+        )
+
+    @property
+    def title(self):
+        return "Graphics"
+
+    @property
+    def active_item(self):
+        # self.proxy.connect_to_signal(
+        #     "NotifyGfx", self.signal_callback
+        # )
+        mode = self.proxy.Mode()
+        if mode == 0:
+            return "Hybrid"
+        elif mode == 5:
+            return "AsusMuxDiscreet"
+        else:
+            return "Hybrid"
+        # if mode not in GFX_MODES.left:
+        #     return "Hybrid"
+        #     mode_name = GFX_MODES[mode]
+        #     if mode_name == "hybrid":
+        #         return "Hybrid"
+        #     elif mode_name == "asusmuxdiscreet":
+        #         return "AsusMuxDiscreet"
+        #     else:
+        #         return "Hybrid"
+        #     # dialog = Util.build_dialog(
+        #     #     "Unrecognized graphics mode with index "
+        #     #     f"<span font_family='monospace'>{int(mode)}</span>.\n"
+        #     #     "\nPlease open a new issue on Github with this bug report!"
+        #     # )
+        #     dialog.add_buttons("Open Github issues page", Gtk.ResponseType.OK)
+        #     resp = dialog.run()
+        #     if resp == Gtk.ResponseType.OK:
+        #         webbrowser.open_new_tab("https://github.com/alexjonker/asusctltray/issues")
+        #     dialog.destroy()
+        #     return GFX_MODES["hybrid"]
+        # return GFX_MODES[mode]
+
+    def signal_callback(self, iface_name, changed, _):
+        self.active = self.proxy.Mode()
+
+    # @on_widget_active_strict
+    # def on_activation(self, widget: Gtk.MenuItem):
+    #     # Return if the currently active profile is already selected in the menu
+    #     if GFX_MODES[self.active_item] == widget.get_label():
+    #         return
+
+    #     if widget.get_label() not in GFX_MODES.right:
+    #         # This shouldn't happen
+    #         return
+
+    #     mode = GFX_MODES[widget.get_label()]
+
+    #     action_ind = self.proxy.SetMode(mode)
+    #     action = GFX_USER_ACTION[action_ind]
+    #     if action == "integrated":
+    #         dialog = Util.build_dialog(
+    #             "You must switch to Integrated mode before switching to Compute or VFIO."
+    #         )
+    #         dialog.run()
+    #         dialog.destroy()
+    #     elif action != "none":
+    #         dialog = Util.build_dialog(
+    #             f"Graphics changed to {widget.get_label()}. "
+    #             f"A {action} is required (save your files!)."
+    #         )
+    #         dialog.add_buttons("Later", Gtk.ResponseType.CLOSE)
+    #         if action == "reboot":
+    #             dialog.add_buttons("Reboot the system", Gtk.ResponseType.OK)
+    #             resp = dialog.run()
+    #             if resp == Gtk.ResponseType.OK:
+    #                 Util.reboot()
+    #             dialog.destroy()
+    #         elif action == "logout":
+    #             dialog.add_buttons("Log me out", Gtk.ResponseType.OK)
+    #             resp = dialog.run()
+    #             if resp == Gtk.ResponseType.OK:
+    #                 Util.logout()
+    #             dialog.destroy()
+    @on_widget_active_strict
+    def on_activation(self, widget: Gtk.MenuItem):
+        import subprocess
+        mode_label = widget.get_label()
+        if mode_label not in ["Hybrid", "AsusMuxDiscreet"]:
+            return
+        cli_mode = "Hybrid" if mode_label == "Hybrid" else "AsusMuxDgpu"
+        try:
+            result = subprocess.run(["pkexec", "supergfxctl", "-m", cli_mode], capture_output=True, text=True)
+            if result.returncode == 0:
+                dialog = Util.build_dialog(f"Graphics changed to {mode_label}. A reboot is required!")
+                dialog.add_buttons("Later", Gtk.ResponseType.CLOSE)
+                dialog.add_buttons("Reboot the system", Gtk.ResponseType.OK)
+                resp = dialog.run()
+                if resp == Gtk.ResponseType.OK:
+                    Util.reboot()
+                dialog.destroy()
+        except Exception as e:
+            dialog = Util.build_dialog(f"Error: {str(e)}")
+            dialog.run()
+            dialog.destroy()
+
+class PowerProfilesController(Controller):
+    """Controller for the "Power profiles" submenu"""
+
+    @property
+    def items(self):
+        return [
+            str(p["Profile"])
+            for p in self.proxy.Get("net.hadess.PowerProfiles", "Profiles")
+        ]
+
+    @property
+    def proxy(self):
+        return dbus.Interface(
+            dbus.SystemBus().get_object(
+                "net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"
+            ),
+            dbus_interface=dbus.PROPERTIES_IFACE,
+        )
+
+    @property
+    def title(self):
+        return "Power profiles"
+
+    @property
+    def active_item(self):
+        # self.proxy.connect_to_signal(
+        #     "PropertiesChanged", self.signal_callback
+        # )
+        return str(self.proxy.Get("net.hadess.PowerProfiles", "ActiveProfile"))
+
+    def signal_callback(self, iface_name, changed, _):
+        self.active = self.proxy.Get("net.hadess.PowerProfiles", "ActiveProfile")
+
+    @on_widget_active_strict
+    def on_activation(self, widget: Gtk.MenuItem):
+        # TODO: humanize label
+        self.proxy.Set(
+            "net.hadess.PowerProfiles",
+            "ActiveProfile",
+            widget.get_label(),
+        )
+
+
+class TrayIcon:
+    """Contains the logic for a tray icon and manages profile/gfx switching"""
+
+    # Holds a reference to the right boost control command (see globals) for this platform
+    boost_ctrl: dict[str, str] = None
+
+    # Holds a reference to the global loop running, to call loop.quit() when necessary
+    loop: GLib.MainLoop = None
+    # Holds the GTK Menu instance
+    menu: Gtk.Menu = None
+    # Holds the Indicator instance
+    icon: appindicator.Indicator = None
+    # Is set to True when Gtk needs to stop the main loop
+    quitting: bool = False
+
+    def __init__(self, loop: GLib.MainLoop) -> None:
+        self.loop = loop
+
+        for control in BOOST_CONTROL:
+            if os.path.isfile(control["path"]):
+                self.boost_ctrl = control
+
+        self.icon = appindicator.Indicator.new(
+            "asusctltray",
+            Gtk.STOCK_INFO,
+            appindicator.IndicatorCategory.SYSTEM_SERVICES,
+        )
+        self.icon.set_status(appindicator.IndicatorStatus.ACTIVE)
+
+        self.build_menu()
+        self.icon.set_menu(self.menu)
+        self.icon.set_icon_theme_path(ICON_BASE_PATH)
+        self.icon.set_icon_full("asusctltray", "")
+
+    def build_menu(self) -> None:
+        """Create and populate the main menu for the tray icon"""
+        self.menu = Gtk.Menu()
+        # self.menu = Gtk.Menu.new_from_model(Gio.Menu())
+
+        GfxController().attach(self.menu)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        PowerProfilesController().attach(self.menu)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        CPUProfileController().attach(self.menu)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        GPUProfileController().attach(self.menu)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
+        if self.boost_ctrl:
+            BoostController(
+                self.boost_ctrl["path"], self.boost_ctrl["on"], self.boost_ctrl["off"]
+            ).attach(self.menu)
+            self.menu.append(Gtk.SeparatorMenuItem())
+
+        icon = Gtk.MenuItem()
+        icon.set_label("Quit asusctltray")
+        icon.connect("activate", self._quit)
+        self.menu.append(icon)
+
+        self.menu.show_all()
+
+    def _quit(self, _) -> None:
+        """Simple callback wrapper for GLib.MainLoop.quit()"""
+        self.loop.quit()
+
+
+if __name__ == "__main__":
+    DBusGMainLoop(set_as_default=True)
+    loop = GLib.MainLoop()
+    TrayIcon(loop)
+    loop.run()

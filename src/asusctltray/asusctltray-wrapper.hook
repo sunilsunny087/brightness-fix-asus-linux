@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/local/bin/asusctltray
+
+[Action]
+Description = Patching asusctltray for brightness fix compatibility...
+When = PostTransaction
+Exec = /bin/bash /usr/local/bin/asusctltray-patch.sh
+NeedsTargets

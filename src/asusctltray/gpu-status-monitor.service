@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU Status Monitor for asusctltray
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gpu-status-monitor.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
