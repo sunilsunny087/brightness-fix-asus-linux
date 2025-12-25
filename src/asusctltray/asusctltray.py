@@ -728,7 +728,37 @@ class TrayIcon:
         self.build_menu()
         self.icon.set_menu(self.menu)
         self.icon.set_icon_theme_path(ICON_BASE_PATH)
-        self.icon.set_icon_full("asusctltray", "")
+        #self.icon.set_icon_full("asusctltray", "")
+        self.update_icon()
+
+    def update_icon(self) -> None:
+        """Update tray icon based on GPU mode and power status"""
+        try:
+            proxy = dbus.Interface(
+                dbus.SystemBus().get_object("org.supergfxctl.Daemon", "/org/supergfxctl/Gfx"),
+                dbus_interface="org.supergfxctl.Daemon"
+            )
+            
+            mode = proxy.Mode()
+            power = proxy.Power()
+            
+            # Determine which icon to use
+            # Mode 5 = AsusMuxDgpu, Mode 0 = Hybrid
+            # Power 4 = active, Power 1 = suspended
+            if mode == 5:  # dGPU mode
+                icon_name = "asusctltray-dgpu"
+            elif mode == 0:  # Hybrid mode
+                if power == 4 or power == 0:  # active
+                    icon_name = "asusctltray-hybrid-active"
+                else:  # suspended (1, 2, 3)
+                    icon_name = "asusctltray-hybrid-suspended"
+            else:
+                icon_name = "asusctltray"  # fallback
+            
+            self.icon.set_icon_full(icon_name, "")
+        except Exception as e:
+            # Fallback to default icon on error
+            self.icon.set_icon_full("asusctltray", "")
 
     def build_menu(self) -> None:
         """Create and populate the main menu for the tray icon"""
@@ -759,6 +789,7 @@ class TrayIcon:
         self.menu.append(icon)
 
         self.menu.show_all()
+        self.update_icon()
 
     def _quit(self, _) -> None:
         """Simple callback wrapper for GLib.MainLoop.quit()"""

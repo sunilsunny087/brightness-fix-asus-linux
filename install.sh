@@ -254,6 +254,27 @@ if [ -f "$INSTALL_DIR/src/asusctltray/asusctltray.py" ]; then
     echo "✓ Installed asusctltray update protection"
 fi
 
+# Install patched asusctltray
+if [ -f "$INSTALL_DIR/src/asusctltray/asusctltray.py" ]; then
+    cp /usr/local/bin/asusctltray /usr/local/bin/asusctltray.original 2>/dev/null || true
+    cp "$INSTALL_DIR/src/asusctltray/asusctltray.py" /usr/local/bin/asusctltray
+    chmod +x /usr/local/bin/asusctltray
+    cp "$INSTALL_DIR/src/asusctltray/asusctltray.py" /usr/local/bin/asusctltray.patched
+    echo "✓ Installed patched asusctltray"
+
+    # Install custom icons
+    if [ -d "$INSTALL_DIR/src/asusctltray/icons" ]; then
+        cp "$INSTALL_DIR/src/asusctltray/icons/"*.svg /usr/share/pixmaps/
+        echo "✓ Installed custom tray icons"
+    fi
+
+    # Install patch script and hook
+    cp "$INSTALL_DIR/src/asusctltray/asusctltray-patch.sh" /usr/local/bin/
+    chmod +x /usr/local/bin/asusctltray-patch.sh
+    cp "$INSTALL_DIR/src/asusctltray/asusctltray-wrapper.hook" /etc/pacman.d/hooks/
+    echo "✓ Installed asusctltray update protection"
+fi
+
 # Install GPU status monitor
 if [ -f "$INSTALL_DIR/src/asusctltray/gpu-status-monitor.sh" ]; then
     cp "$INSTALL_DIR/src/asusctltray/gpu-status-monitor.sh" /usr/local/bin/

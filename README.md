@@ -32,7 +32,23 @@ Without proper configuration, brightness keys, desktop environment sliders, and 
 - **All GPU modes visible**: No more greyed-out options in the tray
 - **Auto-refresh tray**: GPU status monitor detects power state changes
 - **Correct mode indication**: Tray shows which GPU mode is currently active
+- **Dynamic tray icons**: Different icons for dGPU, Hybrid active, and Hybrid suspended
 - **One-command install**: Handles everything including AUR packages
+
+## 🎨 Tray Icons
+
+The system tray icon changes dynamically based on GPU mode and power state:
+
+| Icon | Mode | Description |
+|------|------|-------------|
+| ![dGPU](src/asusctltray/icons/Dgpu.svg) | AsusMuxDgpu | Dedicated GPU mode (always active) |
+| ![Hybrid Active](src/asusctltray/icons/hybrid_active.svg) | Hybrid (Active) | Hybrid mode with dGPU active |
+| ![Hybrid Suspended](src/asusctltray/icons/hybrid_suspended.svg) | Hybrid (Suspended) | Hybrid mode with dGPU suspended |
+
+Icons automatically update when:
+- Switching GPU modes
+- GPU power state changes (active ↔ suspended)
+- Tray restarts
 
 ## 🚀 Quick Start
 
