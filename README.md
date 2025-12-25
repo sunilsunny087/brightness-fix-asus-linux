@@ -9,6 +9,8 @@
 ## ✨ Features
 
 - ✅ **Automatic boot parameter management** - Configures kernel parameters based on GPU mode
+- ✅ **AsusCtlTray integration** - Patched tray with all GPU modes always visible
+- ✅ **GPU status monitor** - Automatically refreshes tray when GPU power state changes
 - ✅ **Zero manual configuration** - One command installation, works immediately
 - ✅ **Update-proof** - Survives kernel updates, driver updates, and package upgrades
 - ✅ **Universal compatibility** - Works with CLI, KDE plasmoid, and system tray
@@ -23,6 +25,14 @@ On ASUS laptops with hybrid graphics, brightness controls stop working when swit
 - **Hybrid mode** requires `nvidia_wmi_ec_backlight` interface (needs NO `acpi_backlight=native`)
 
 Without proper configuration, brightness keys, desktop environment sliders, and manual brightness control all fail.
+
+## 🆕 What's New in v2.0
+
+- **AsusCtlTray Integration**: Automatically installs and patches asusctltray
+- **All GPU modes visible**: No more greyed-out options in the tray
+- **Auto-refresh tray**: GPU status monitor detects power state changes
+- **Correct mode indication**: Tray shows which GPU mode is currently active
+- **One-command install**: Handles everything including AUR packages
 
 ## 🚀 Quick Start
 
