@@ -1,5 +1,6 @@
 # Everything has been created by AI in this project
 I ran through a problem on my system and i was just starting to learn prompting so i thought of testing my prompting and this is the end result.
+Asus M16 2023.
 # 🔆 Arch Linux Brightness Fix for ASUS Laptops
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
