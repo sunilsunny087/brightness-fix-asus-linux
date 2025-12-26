@@ -10,12 +10,14 @@
 
 - ✅ **Automatic boot parameter management** - Configures kernel parameters based on GPU mode
 - ✅ **AsusCtlTray integration** - Patched tray with all GPU modes always visible
+- ✅ **Hybrid & dGPU mode support** - Full brightness control in both modes
 - ✅ **GPU status monitor** - Automatically refreshes tray when GPU power state changes
 - ✅ **Zero manual configuration** - One command installation, works immediately
 - ✅ **Update-proof** - Survives kernel updates, driver updates, and package upgrades
-- ✅ **Universal compatibility** - Works with CLI, KDE plasmoid, and system tray
+- ✅ **Universal CLI compatibility** - Works perfectly via command line
 - ✅ **Intelligent wrapper** - Detects GPU mode and adjusts configuration automatically
 - ✅ **Self-healing** - Includes monitoring and recovery tools
+- ⚠️ **KDE plasmoid limitation** - Use AsusCtlTray or CLI instead
 
 ## 🎯 Problem Statement
 
@@ -78,21 +80,32 @@ That's it! Brightness will now work in all GPU modes.
 
 ### Switching GPU Modes
 
-**Command Line (Recommended):**
+**✅ Method 1: Via AsusCtlTray (Recommended)**
+1. Click the tray icon
+2. Select Graphics → desired mode (Hybrid or AsusMuxDiscreet)
+3. Click "Reboot the system" when prompted
+4. Brightness will work after reboot
+
+**✅ Method 2: Via Command Line**
 ```bash
 # Switch to Hybrid mode
 sudo supergfxctl -m Hybrid
 sudo reboot
 
-# Switch to dGPU mode  
+# Switch to dGPU mode
 sudo supergfxctl -m AsusMuxDgpu
 sudo reboot
 ```
 
-**Via KDE Plasmoid or System Tray:**
-1. Click the GPU widget
-2. Select desired mode
-3. Reboot when prompted
+**❌ Method 3: KDE Plasmoid/Widget**
+- Not recommended - has greyed-out options issue
+- Use AsusCtlTray or CLI instead
+
+### Supported GPU Modes
+
+- **Hybrid** - Intel iGPU for display, NVIDIA for compute (better battery)
+- **AsusMuxDgpu** - NVIDIA dGPU for everything (maximum performance)
+- **Integrated** - Not officially supported (untested)
 
 ### Monitoring & Maintenance
 
@@ -194,6 +207,45 @@ sudo reboot
 ```
 
 This removes all modifications and restores original `supergfxctl`.
+
+## ⚠️ Known Limitations
+
+### Plasmoid/Widget Limitations
+
+**KDE Plasma supergfxctl widget:**
+- ❌ Greyed-out modes issue not fixed
+- The widget queries the daemon's `Supported()` method directly via D-Bus
+- Only shows modes available in *current* hardware state (not switchable modes)
+- **Workaround:** Use AsusCtlTray or CLI instead
+
+**Recommended alternatives:**
+- ✅ **AsusCtlTray** (fully working with all modes visible)
+- ✅ **CLI commands** (`sudo supergfxctl -m <mode>`)
+
+### GPU Mode Support
+
+| Mode | Brightness Control | Switching | Status |
+|------|-------------------|-----------|--------|
+| **Hybrid** | ✅ Works | ✅ Works | Fully supported |
+| **AsusMuxDgpu** | ✅ Works | ✅ Works | Fully supported |
+| **Integrated** | ❓ Untested | ❓ Untested | Not officially supported |
+
+**Note on Integrated mode:**
+- The installer and wrapper support Hybrid and AsusMuxDgpu modes
+- Integrated mode (Intel iGPU only) is untested and may not work correctly
+- If you need Integrated mode support, please open an issue with your testing results
+
+### Mode Persistence
+
+**Important:** GPU mode changes require:
+1. Running the switch command (CLI or tray)
+2. **Rebooting the system**
+3. The BIOS MUX switch changes during reboot
+
+If your system stays in Hybrid mode after reboot:
+- Check `/etc/supergfxd.conf` - may need manual editing
+- Check BIOS settings for GPU switching options
+- See [Troubleshooting](#troubleshooting) section below
 
 ## 🐛 Troubleshooting
 
